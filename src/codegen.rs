@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::thread::Builder;
 use crate::lexer::Token;
 use inkwell::{IntPredicate, OptimizationLevel};
 use inkwell::basic_block::BasicBlock;
@@ -9,7 +10,6 @@ use inkwell::module::Linkage;
 pub fn codegen(tokens: Vec<Token>) {
 	let context = Context::create();
 	let module = context.create_module("main");
-	let builder = context.create_builder();
 
 	Target::initialize_native(&InitializationConfig::default()).expect("Failed to initialize native target.");
 	module.set_triple(&TargetMachine::get_default_triple());
@@ -31,6 +31,8 @@ pub fn codegen(tokens: Vec<Token>) {
 	let fn_type = void_type.fn_type(&[], false);
 	let function = module.add_function("main", fn_type, Option::from(Linkage::External));
 	let entry_block = context.append_basic_block(function, "entry");
+
+	let builder = context.create_builder();
 
 	builder.position_at_end(entry_block);
 
@@ -85,6 +87,7 @@ pub fn codegen(tokens: Vec<Token>) {
 			}
 			Token::JmpPast => {
 				let loop_block = context.append_basic_block(function, "");
+				builder.build_unconditional_branch(loop_block);
 				builder.position_at_end(loop_block);
 			}
 			Token::JmpBack => {
@@ -95,12 +98,15 @@ pub fn codegen(tokens: Vec<Token>) {
 
 				let comparison = builder.build_int_compare(IntPredicate::NE, value, char_type.const_int(0, false).into(), "");
 
-				builder.build_conditional_branch(comparison, builder.get_insert_block().unwrap(), elseblokck);
+				let after_block = context.append_basic_block(function, "");
+
+				builder.build_conditional_branch(comparison, builder.get_insert_block().unwrap(), after_block);
+
+				builder.position_at_end(after_block);
 			}
 		}
 	}
 
-	builder.position_at_end(entry_block);
 	builder.build_return(None);
 
 	let result = module.verify();
