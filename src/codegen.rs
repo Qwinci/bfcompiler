@@ -1,11 +1,12 @@
 use std::path::Path;
-use std::thread::Builder;
 use crate::lexer::Token;
 use inkwell::{IntPredicate, OptimizationLevel};
-use inkwell::basic_block::BasicBlock;
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::context::Context;
 use inkwell::module::Linkage;
+use inkwell::passes::PassManager;
+use inkwell::values::FunctionValue;
+
 
 pub fn codegen(tokens: Vec<Token>) {
 	let context = Context::create();
@@ -45,6 +46,17 @@ pub fn codegen(tokens: Vec<Token>) {
 
 	let getchar_type = char_type.fn_type(&[], false);
 	let getchar = module.add_function("getchar", getchar_type, Option::from(Linkage::External));
+
+	let pass_manager: PassManager<FunctionValue<>> = PassManager::create(&module);
+	pass_manager.add_instruction_combining_pass();
+	pass_manager.add_reassociate_pass();
+	pass_manager.add_new_gvn_pass();
+	pass_manager.add_cfg_simplification_pass();
+	pass_manager.add_basic_alias_analysis_pass();
+	pass_manager.add_promote_memory_to_register_pass();
+	pass_manager.add_instruction_simplify_pass();
+	pass_manager.add_instruction_combining_pass();
+	pass_manager.add_reassociate_pass();
 
 	for token in tokens.iter() {
 		match token {
@@ -108,6 +120,8 @@ pub fn codegen(tokens: Vec<Token>) {
 	}
 
 	builder.build_return(None);
+
+	pass_manager.run_on(&function);
 
 	let result = module.verify();
 	if result.is_err() {
