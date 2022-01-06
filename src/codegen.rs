@@ -2,6 +2,7 @@ use std::path::Path;
 use crate::lexer::Token;
 use inkwell::{IntPredicate, OptimizationLevel};
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::passes::PassManager;
@@ -40,6 +41,7 @@ pub fn codegen(tokens: Vec<Token>) {
 	let cells = builder.build_array_malloc(char_type, i64_type.const_int(256, false), "").unwrap();
 	let ptr = builder.build_alloca(i64_type, "");
 	builder.build_store(ptr, i64_type.const_int(0, false));
+	let mut loop_end_stack: Vec<BasicBlock> = Vec::new();
 
 	let putchar_type = i32_type.fn_type(&[char_type.into()], false);
 	let putchar = module.add_function("putchar", putchar_type, Option::from(Linkage::External));
@@ -98,19 +100,34 @@ pub fn codegen(tokens: Vec<Token>) {
 				builder.build_store(address, call.try_as_basic_value().unwrap_left().into_int_value());
 			}
 			Token::JmpPast => {
-				let loop_block = context.append_basic_block(function, "");
-				builder.build_unconditional_branch(loop_block);
-				builder.position_at_end(loop_block);
-			}
-			Token::JmpBack => {
+				let loop_block = context.append_basic_block(function, "loop_begin");
+				let after_block = context.append_basic_block(function, "loop_end");
+
 				let index = builder.build_load(ptr, "");
 				let address = unsafe { builder.build_gep(cells, &[index.into_int_value().into()], "") };
 
 				let value = builder.build_load(address, "").into_int_value();
 
 				let comparison = builder.build_int_compare(IntPredicate::NE, value, char_type.const_int(0, false).into(), "");
+				builder.build_conditional_branch(comparison, loop_block, after_block);
 
-				let after_block = context.append_basic_block(function, "");
+				builder.position_at_end(loop_block);
+				loop_end_stack.push(after_block);
+			}
+			Token::JmpBack => {
+				let after_block = loop_end_stack.pop();
+				if after_block.is_none() {
+					panic!("WHY U NO LOOP END?");
+				}
+
+				let after_block = after_block.unwrap();
+
+				let index = builder.build_load(ptr, "");
+				let address = unsafe { builder.build_gep(cells, &[index.into_int_value().into()], "") };
+
+				let value = builder.build_load(address, "").into_int_value();
+
+				let comparison = builder.build_int_compare(IntPredicate::NE, value, char_type.const_int(0, false).into(), "");
 
 				builder.build_conditional_branch(comparison, builder.get_insert_block().unwrap(), after_block);
 
@@ -121,13 +138,14 @@ pub fn codegen(tokens: Vec<Token>) {
 
 	builder.build_return(None);
 
-	pass_manager.run_on(&function);
-
 	let result = module.verify();
 	if result.is_err() {
 		println!("{}", result.unwrap_err().to_str().unwrap());
 		panic!("LLVM module verification failed.");
 	}
+
+	pass_manager.run_on(&function);
+
 	module.write_bitcode_to_path(Path::new("output.bc"));
 	target_machine.write_to_file(&module, FileType::Object, Path::new("output.o")).expect("failed to write result output to a file.");
 }
