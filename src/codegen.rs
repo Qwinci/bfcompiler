@@ -38,10 +38,12 @@ pub fn codegen(tokens: Vec<Token>) {
 
 	builder.position_at_end(entry_block);
 
-	let cells = builder.build_array_malloc(char_type, i64_type.const_int(256, false), "").unwrap();
+	let data_size = i32_type.const_int(256, false);
+
+	let cells = builder.build_array_malloc(char_type, data_size, "").unwrap();
 	let ptr = builder.build_alloca(i64_type, "");
 	builder.build_store(ptr, i64_type.const_int(0, false));
-	let mut loop_end_stack: Vec<BasicBlock> = Vec::new();
+	let mut loop_stack: Vec<(BasicBlock, BasicBlock)> = Vec::new();
 
 	let putchar_type = i32_type.fn_type(&[char_type.into()], false);
 	let putchar = module.add_function("putchar", putchar_type, Option::from(Linkage::External));
@@ -49,15 +51,20 @@ pub fn codegen(tokens: Vec<Token>) {
 	let getchar_type = char_type.fn_type(&[], false);
 	let getchar = module.add_function("getchar", getchar_type, Option::from(Linkage::External));
 
+	match builder.build_memset(cells, 8, char_type.const_zero(), data_size) {
+		Ok(_) => (),
+		Err(err) => panic!("{}", err)
+	};
+
 	let pass_manager: PassManager<FunctionValue<>> = PassManager::create(&module);
-	pass_manager.add_instruction_combining_pass();
+	// pass_manager.add_instruction_combining_pass();
 	pass_manager.add_reassociate_pass();
 	pass_manager.add_new_gvn_pass();
 	pass_manager.add_cfg_simplification_pass();
 	pass_manager.add_basic_alias_analysis_pass();
 	pass_manager.add_promote_memory_to_register_pass();
 	pass_manager.add_instruction_simplify_pass();
-	pass_manager.add_instruction_combining_pass();
+	// pass_manager.add_instruction_combining_pass();
 	pass_manager.add_reassociate_pass();
 
 	for token in tokens.iter() {
@@ -112,15 +119,15 @@ pub fn codegen(tokens: Vec<Token>) {
 				builder.build_conditional_branch(comparison, loop_block, after_block);
 
 				builder.position_at_end(loop_block);
-				loop_end_stack.push(after_block);
+				loop_stack.push((loop_block, after_block));
 			}
 			Token::JmpBack => {
-				let after_block = loop_end_stack.pop();
-				if after_block.is_none() {
+				let loop_blocks = loop_stack.pop();
+				if loop_blocks.is_none() {
 					panic!("WHY U NO LOOP END?");
 				}
 
-				let after_block = after_block.unwrap();
+				let (loop_block, after_block) = loop_blocks.unwrap();
 
 				let index = builder.build_load(ptr, "");
 				let address = unsafe { builder.build_gep(cells, &[index.into_int_value().into()], "") };
@@ -129,7 +136,7 @@ pub fn codegen(tokens: Vec<Token>) {
 
 				let comparison = builder.build_int_compare(IntPredicate::NE, value, char_type.const_int(0, false).into(), "");
 
-				builder.build_conditional_branch(comparison, builder.get_insert_block().unwrap(), after_block);
+				builder.build_conditional_branch(comparison, loop_block, after_block);
 
 				builder.position_at_end(after_block);
 			}
